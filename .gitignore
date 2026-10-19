@@ -1,0 +1,22 @@
+# Ambiente virtual e cache do Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Chaves do Azure
+.env
+
+# Resultados gerados pelo programa
+saida/
+
+# Pesos dos modelos YOLO (baixados automaticamente)
+*.pt
+
+# Vídeos e áudios costumam ser grandes / conter dados sensíveis
+dados/*.mp4
+dados/*.avi
+dados/*.mov
+dados/*.wav
+dados/*.mp3
