@@ -30,6 +30,7 @@ load_dotenv(PASTA_PROJETO / ".env")
 # ---------------------------------------------------------------------------
 AZURE_SPEECH_KEY = os.getenv("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION = os.getenv("AZURE_SPEECH_REGION", "")
+AZURE_SPEECH_ENDPOINT = os.getenv("AZURE_SPEECH_ENDPOINT", "")
 AZURE_LANGUAGE_KEY = os.getenv("AZURE_LANGUAGE_KEY", "")
 AZURE_LANGUAGE_ENDPOINT = os.getenv("AZURE_LANGUAGE_ENDPOINT", "")
 IDIOMA = "pt-BR"
@@ -45,6 +46,8 @@ WEBHOOK_DEMONSTRACAO = "https://webhook.site/bb185afd-8555-45f3-9e21-2377dc8f58d
 # defina WEBHOOK_EQUIPE_MEDICA no arquivo .env. Se existir, ele tem prioridade sobre o exemplo fixo.
 WEBHOOK_EQUIPE_MEDICA = os.getenv("WEBHOOK_EQUIPE_MEDICA") or WEBHOOK_DEMONSTRACAO
 
+def azure_speech_api_configurado():
+    return bool(AZURE_SPEECH_KEY and AZURE_SPEECH_REGION and AZURE_SPEECH_ENDPOINT)
 
 def azure_speech_configurado():
     return bool(AZURE_SPEECH_KEY and AZURE_SPEECH_REGION)
