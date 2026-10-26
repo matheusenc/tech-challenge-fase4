@@ -14,6 +14,7 @@ arquivo .txt com o mesmo nome do áudio, ele é usado como transcrição.
 """
 
 import re
+import sys
 import threading
 import unicodedata
 from datetime import datetime
@@ -51,6 +52,58 @@ def extrair_caracteristicas_voz(sinal, taxa):
     }
 
 
+def extrair_caracteristicas_voz_falante(sinal, taxa, falas, speaker_id):
+    intervalos = []
+    for fala in falas:
+        if fala.get("speaker_id") != speaker_id:
+            continue
+        try:
+            inicio = float(fala["inicio_segundos"])
+            fim = inicio + float(fala["duracao_segundos"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        inicio_amostra = max(0, round(inicio * taxa))
+        fim_amostra = min(len(sinal), round(fim * taxa))
+        if fim_amostra > inicio_amostra:
+            intervalos.append((inicio_amostra, fim_amostra))
+
+    if not intervalos:
+        return None
+
+    intervalos.sort()
+    intervalos_unidos = []
+    for inicio, fim in intervalos:
+        if intervalos_unidos and inicio <= intervalos_unidos[-1][1]:
+            anterior_inicio, anterior_fim = intervalos_unidos[-1]
+            intervalos_unidos[-1] = (anterior_inicio, max(anterior_fim, fim))
+        else:
+            intervalos_unidos.append((inicio, fim))
+
+    duracao = 0
+    tempo_fala = 0
+    pausas = 0
+    for inicio, fim in intervalos_unidos:
+        trecho = sinal[inicio:fim]
+        duracao += len(trecho)
+        trechos_fala = librosa.effects.split(trecho, top_db=30)
+        tempo_fala += sum(fim_trecho - inicio_trecho
+                          for inicio_trecho, fim_trecho in trechos_fala)
+        pausas += sum(1 for (_, fim_anterior), (inicio_proximo, _) in
+                      zip(trechos_fala, trechos_fala[1:])
+                      if (inicio_proximo - fim_anterior) / taxa >= 0.25)
+
+    duracao_segundos = duracao / taxa
+    minutos = max(duracao_segundos / 60, 1e-6)
+    tempo_fala_segundos = tempo_fala / taxa
+    return {
+        "duracao_segundos": round(duracao_segundos, 1),
+        "tempo_de_fala_segundos": round(tempo_fala_segundos, 1),
+        "proporcao_pausas": round(1 - tempo_fala / duracao, 2) if duracao else 0,
+        "pausas_por_minuto": round(pausas / minutos, 1),
+    }
+
+
 def avaliar_alteracoes_vocais(caracteristicas):
     """Compara os indicadores com os limites do config e devolve uma lista
     de textos descrevendo as alterações encontradas."""
@@ -80,40 +133,113 @@ def transcrever_com_azure(caminho_wav):
     configuracao = speechsdk.SpeechConfig(subscription=config.AZURE_SPEECH_KEY,
                                           region=config.AZURE_SPEECH_REGION)
     configuracao.speech_recognition_language = config.IDIOMA
+    configuracao.set_property(
+        speechsdk.PropertyId.SpeechServiceResponse_DiarizeIntermediateResults,
+        "true",
+    )
     audio = speechsdk.audio.AudioConfig(filename=str(caminho_wav))
-    reconhecedor = speechsdk.SpeechRecognizer(speech_config=configuracao, audio_config=audio)
+    transcritor = speechsdk.transcription.ConversationTranscriber(
+        speech_config=configuracao,
+        audio_config=audio,
+    )
 
-    frases = []
+    falas = []
     erros = []
     terminou = threading.Event()
 
-    def ao_reconhecer_frase(evento):
+    def ao_transcrever(evento):
         if evento.result.reason == speechsdk.ResultReason.RecognizedSpeech:
-            frases.append(evento.result.text)
+            falas.append({
+                "speaker_id": evento.result.speaker_id or "Unknown",
+                "texto": evento.result.text,
+                "inicio_segundos": evento.result.offset / 10_000_000,
+                "duracao_segundos": evento.result.duration / 10_000_000,
+            })
 
     def ao_cancelar(evento):
-        if evento.cancellation_details.reason == speechsdk.CancellationReason.Error:
-            erros.append(evento.cancellation_details.error_details)
+        detalhes = getattr(evento, "cancellation_details", None)
+        motivo = getattr(evento, "reason", None)
+        if detalhes:
+            motivo = detalhes.reason
+        if motivo == speechsdk.CancellationReason.Error:
+            erros.append(getattr(detalhes, "error_details", None)
+                         or getattr(evento, "error_details", "Erro desconhecido"))
         terminou.set()
 
-    reconhecedor.recognized.connect(ao_reconhecer_frase)
-    reconhecedor.session_stopped.connect(lambda evento: terminou.set())
-    reconhecedor.canceled.connect(ao_cancelar)
+    transcritor.transcribed.connect(ao_transcrever)
+    transcritor.session_stopped.connect(lambda evento: terminou.set())
+    transcritor.canceled.connect(ao_cancelar)
 
-    # Reconhecimento contínuo: o "recognize_once" para na primeira frase (~30 s)
-    reconhecedor.start_continuous_recognition()
-    terminou.wait(timeout=900)
-    reconhecedor.stop_continuous_recognition()
+    transcritor.start_transcribing_async()
+    if not terminou.wait(timeout=900):
+        transcritor.stop_transcribing_async()
+        raise TimeoutError("A diarização do áudio excedeu o limite de 15 minutos.")
+    transcritor.stop_transcribing_async()
 
     if erros:
         raise RuntimeError(f"Erro no Azure Speech: {erros[0]}")
-    return " ".join(frases)
+    return falas
+
+def transcrever_com_diarizacao_api(caminho_wav, max_falantes=2):
+    import json
+
+    import requests
+
+    endpoint = config.AZURE_SPEECH_ENDPOINT.strip().rstrip("/")
+    if not endpoint:
+        if not config.AZURE_SPEECH_REGION:
+            raise ValueError("Configure AZURE_SPEECH_ENDPOINT ou AZURE_SPEECH_REGION no .env.")
+        endpoint = f"https://{config.AZURE_SPEECH_REGION}.api.cognitive.microsoft.com"
+
+    url = f"{endpoint}/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
+    definicao = {
+        "locales": [config.IDIOMA],
+        "diarization": {"enabled": True, "maxSpeakers": max_falantes},
+    }
+
+    with Path(caminho_wav).open("rb") as arquivo_audio:
+        resposta = requests.post(
+            url,
+            headers={"Ocp-Apim-Subscription-Key": config.AZURE_SPEECH_KEY},
+            files={"audio": (Path(caminho_wav).name, arquivo_audio, "audio/wav")},
+            data={"definition": json.dumps(definicao)},
+            timeout=300,
+        )
+
+    resposta.raise_for_status()
+    resultado = resposta.json()
+    frases = resultado.get("phrases")
+    if not isinstance(frases, list):
+        raise RuntimeError("A resposta da Fast Transcription API não contém a lista 'phrases'.")
+
+    falas = []
+    for frase in frases:
+        speaker = frase.get("speaker")
+        if speaker is None:
+            speaker_id = "Unknown"
+        elif isinstance(speaker, int) or str(speaker).isdigit():
+            speaker_id = f"Guest-{int(speaker) + 1}"
+        else:
+            speaker_id = f"Guest-{speaker}"
+
+        falas.append({
+            "speaker_id": speaker_id,
+            "texto": frase.get("text", ""),
+            "inicio_segundos": float(frase.get("offsetMilliseconds", 0)) / 1000,
+            "duracao_segundos": float(frase.get("durationMilliseconds", 0)) / 1000,
+        })
+
+    return falas
 
 
 def obter_transcricao(caminho_audio, caminho_wav):
+    if config.azure_speech_api_configurado():
+        print("  Transcrevendo com diarização pela Fast Transcription API...")
+        return transcrever_com_diarizacao_api(caminho_wav), "Azure Fast Transcription API"
+
     if config.azure_speech_configurado():
-        print("  Transcrevendo com Azure Speech to Text...")
-        return transcrever_com_azure(caminho_wav), "Azure Speech to Text"
+        print("  Transcrevendo e separando falantes com Azure Speech to Text...")
+        return transcrever_com_azure(caminho_wav), "Azure Fast Transcription API"
 
     arquivo_texto = Path(caminho_audio).with_suffix(".txt")
     if arquivo_texto.exists():
@@ -189,7 +315,7 @@ def encontrar_termos_criticos(texto):
 # ---------------------------------------------------------------------------
 # Função principal
 # ---------------------------------------------------------------------------
-def analisar_audio(caminho_audio, paciente_id):
+def analisar_audio(caminho_audio, paciente_id, falante_paciente=None):
     caminho_audio = Path(caminho_audio)
     print(f"Analisando áudio: {caminho_audio.name}")
 
@@ -202,19 +328,38 @@ def analisar_audio(caminho_audio, paciente_id):
     caracteristicas = extrair_caracteristicas_voz(sinal, taxa)
     transcricao, fonte_transcricao = obter_transcricao(caminho_audio, caminho_wav)
 
-    if transcricao:
-        minutos_de_fala = max(caracteristicas["tempo_de_fala_segundos"] / 60, 1e-6)
-        caracteristicas["palavras_por_minuto"] = round(len(transcricao.split()) / minutos_de_fala)
+    falas = transcricao if isinstance(transcricao, list) else []
+    transcricao = (" ".join(fala["texto"] for fala in falas)
+                   if falas else transcricao)
+ 
+    id_falante_paciente = selecionar_falante_paciente(falas, falante_paciente)
+    texto_paciente = texto_do_falante(falas, id_falante_paciente)
 
-    alteracoes = avaliar_alteracoes_vocais(caracteristicas)
+    caracteristicas_falante = (extrair_caracteristicas_voz_falante(
+        sinal, taxa, falas, id_falante_paciente) if id_falante_paciente else None)
+    
+    metricas_vocais_atribuiveis = bool(texto_paciente) and caracteristicas_falante is not None
+
+    if metricas_vocais_atribuiveis:
+        caracteristicas = caracteristicas_falante
+        minutos_de_fala = max(caracteristicas["tempo_de_fala_segundos"] / 60, 1e-6)
+        caracteristicas["palavras_por_minuto"] = round(len(texto_paciente.split()) / minutos_de_fala)
+
+    alteracoes = (avaliar_alteracoes_vocais(caracteristicas)
+                  if metricas_vocais_atribuiveis else [])
+    
     termos = encontrar_termos_criticos(transcricao)
 
     analise_texto = None
-    if transcricao and config.azure_language_configurado():
+    if texto_paciente and config.azure_language_configurado():
         print("  Analisando sentimento e frases-chave com Azure Text Analytics...")
-        analise_texto = analisar_texto_com_azure(transcricao)
-    elif transcricao:
+        analise_texto = analisar_texto_com_azure(texto_paciente)
+    elif transcricao and not texto_paciente:
+        print("  Falante do paciente não identificado: termos e sentimento não serão atribuídos.")
+    elif texto_paciente:
         print("  Azure Text Analytics não configurado: sentimento não analisado.")
+    if texto_paciente and not metricas_vocais_atribuiveis:
+        print("  Métricas vocais não atribuídas: sem intervalos diarizados válidos para o falante escolhido.")
 
     # Alertas
     agora = datetime.now()
@@ -236,7 +381,43 @@ def analisar_audio(caminho_audio, paciente_id):
         "alteracoes_vocais": alteracoes,
         "fonte_transcricao": fonte_transcricao,
         "transcricao": transcricao,
+        "falas": falas,
+        "falante_paciente": id_falante_paciente,
+        "transcricao_paciente": texto_paciente,
+        "metricas_vocais_atribuiveis": metricas_vocais_atribuiveis,
         "termos_criticos": termos,
         "analise_texto": analise_texto,
     }
     return resultado, alertas
+
+
+def selecionar_falante_paciente(falas, escolha=None):
+    """Retorna o ID confirmado do paciente; nunca infere pelo Guest-N."""
+    falantes = sorted({fala["speaker_id"] for fala in falas
+                       if fala["speaker_id"] and fala["speaker_id"] != "Unknown"})
+    if escolha:
+        if escolha not in falantes:
+            raise ValueError(f"Falante {escolha!r} não encontrado. IDs disponíveis: {falantes}")
+        return escolha
+    if not falantes or not sys.stdin.isatty():
+        return None
+
+    print("  Falantes identificados (confirme qual é o paciente):")
+    for falante in falantes:
+        exemplos = [fala["texto"] for fala in falas if fala["speaker_id"] == falante]
+        resumo = " ".join(exemplos)[:160]
+        print(f"    {falante}: {resumo}")
+
+    while True:
+        escolha = input("  ID do paciente (ou Enter para não atribuir): ").strip()
+        if not escolha:
+            return None
+        if escolha in falantes:
+            return escolha
+        print(f"  ID inválido. Escolha um destes: {', '.join(falantes)}")
+
+def texto_do_falante(falas, speaker_id):
+    if not speaker_id:
+        return ""
+    return " ".join(fala["texto"] for fala in falas
+                    if fala["speaker_id"] == speaker_id)

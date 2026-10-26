@@ -79,6 +79,7 @@ pip install -r requirements.txt
 ```
 AZURE_SPEECH_KEY=sua-chave
 AZURE_SPEECH_REGION=brazilsouth
+AZURE_SPEECH_ENDPOINT=https://brazilsouth.api.cognitive.microsoft.com/
 AZURE_LANGUAGE_KEY=sua-chave
 AZURE_LANGUAGE_ENDPOINT=https://seu-recurso.cognitiveservices.azure.com/
 ```
