@@ -39,14 +39,47 @@ def novo_alerta(linha, tipo, gravidade, descricao):
 
 def verificar_dose_maxima(tabela):
     alertas = []
+
+    unidades_esperadas = {
+        "dipirona": "mg",
+        "paracetamol": "mg",
+        "morfina": "mg",
+        "omeprazol": "mg",
+        "enoxaparina": "mg",
+        "insulina regular": "UI",
+    }
+
     for _, linha in tabela.iterrows():
-        maximo = config.DOSE_MAXIMA.get(linha["medicamento"])
-        if maximo is not None and linha["dose"] > maximo:
+        medicamento = str(linha["medicamento"]).strip().lower()
+        unidade = str(linha["unidade"]).strip()
+        dose = linha["dose"]
+
+        maximo = config.DOSE_MAXIMA.get(medicamento)
+        unidade_esperada = unidades_esperadas.get(medicamento)
+
+        if maximo is None:
+            continue
+
+        if unidade.lower() != unidade_esperada.lower():
             alertas.append(novo_alerta(
-                linha, "Dose acima do máximo", "alta",
-                f"{linha['medicamento']} {linha['dose']:g} {linha['unidade']} "
-                f"(máximo por dose: {maximo:g} {linha['unidade']}).",
+                linha,
+                "Unidade de dose incompatível",
+                "media",
+                f"{medicamento}: unidade informada '{unidade}', "
+                f"esperada '{unidade_esperada}'. "
+                "Dose não comparada ao limite configurado.",
             ))
+            continue
+
+        if dose > maximo:
+            alertas.append(novo_alerta(
+                linha,
+                "Dose acima do máximo",
+                "alta",
+                f"{medicamento}: {dose:g} {unidade} "
+                f"(limite ilustrativo: {maximo:g} {unidade_esperada}).",
+            ))
+
     return alertas
 
 

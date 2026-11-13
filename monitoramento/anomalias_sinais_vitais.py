@@ -103,32 +103,88 @@ def detectar_por_regras(tabela):
 
 
 def detectar_por_isolation_forest(tabela):
-    """Regra 3: modelo Isolation Forest treinado separadamente para cada paciente.
-    Leituras que já estão fora dos limites clínicos são ignoradas aqui
-    (a regra 1 já gerou alerta para elas)."""
-    colunas = colunas_de_sinais(tabela)
+    """
+    Detecta anomalias usando Isolation Forest.
+
+    O modelo é treinado com os primeiros 70% dos registros
+    de cada paciente e avalia os 30% mais recentes.
+
+    Os registros devem estar ordenados cronologicamente.
+    """
     alertas = []
+    colunas = colunas_de_sinais(tabela)
+
+    if not colunas:
+        return alertas
 
     for paciente_id, leituras in tabela.groupby("paciente_id"):
-        dados = leituras.dropna(subset=colunas)
+
+        dados = (
+            leituras
+            .dropna(subset=colunas)
+            .sort_values("data_hora")
+            .copy()
+        )
+
         if len(dados) < 30:
-            continue   # poucos dados para treinar o modelo
+            continue
 
-        modelo = IsolationForest(contamination=config.CONTAMINACAO_ISOLATION_FOREST, random_state=42)
-        previsoes = modelo.fit_predict(dados[colunas])   # -1 = anomalia, 1 = normal
+        divisao = int(len(dados) * 0.70)
 
-        for (_, leitura), previsao in zip(dados.iterrows(), previsoes):
-            if previsao != -1 or fora_dos_limites(leitura, colunas):
+        treino = dados.iloc[:divisao]
+        teste = dados.iloc[divisao:]
+
+        # Utiliza apenas registros dentro dos limites
+        # ilustrativos para formar a referência inicial.
+        treino_normal = treino[
+            ~treino.apply(
+                lambda linha: fora_dos_limites(linha, colunas),
+                axis=1
+            )
+        ]
+
+        if len(treino_normal) < 20:
+            continue
+
+        modelo = IsolationForest(
+            n_estimators=100,
+            contamination=config.CONTAMINACAO_ISOLATION_FOREST,
+            random_state=42
+        )
+
+        modelo.fit(treino_normal[colunas])
+
+        previsoes = modelo.predict(teste[colunas])
+
+        for (_, leitura), previsao in zip(
+            teste.iterrows(), previsoes
+        ):
+            if previsao != -1:
                 continue
-            valores = ", ".join(f"{config.NOMES_SINAIS_VITAIS[c]}={leitura[c]:.0f}" for c in colunas)
-            alertas.append(Alerta(
-                data_hora=leitura["data_hora"],
-                paciente_id=str(paciente_id),
-                origem="sinais_vitais",
-                tipo="Combinação incomum de sinais vitais",
-                gravidade="baixa",
-                descricao=f"Padrão diferente do habitual deste paciente ({valores}).",
-            ))
+
+            # Evita repetir anomalias já identificadas
+            # pelas regras de limites clínicos.
+            if fora_dos_limites(leitura, colunas):
+                continue
+
+            valores = ", ".join(
+                f"{config.NOMES_SINAIS_VITAIS[c]}={leitura[c]:.0f}"
+                for c in colunas
+            )
+
+            alertas.append(
+                Alerta(
+                    data_hora=leitura["data_hora"],
+                    paciente_id=str(paciente_id),
+                    origem="sinais_vitais",
+                    tipo="Combinação incomum de sinais vitais",
+                    gravidade="baixa",
+                    descricao=(
+                        "Padrão diferente do histórico "
+                        f"deste paciente ({valores})."
+                    ),
+                )
+            )
 
     return alertas
 

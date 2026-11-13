@@ -36,15 +36,13 @@ AZURE_LANGUAGE_ENDPOINT = os.getenv("AZURE_LANGUAGE_ENDPOINT", "")
 IDIOMA = "pt-BR"
 
 # Para onde os alertas são enviados.
-#
-# Exemplo fixo para a demonstração: URL do https://webhook.site gerada pelo grupo.
-# Para ver os alertas chegando em tempo real, abra https://webhook.site no mesmo navegador
-# em que esta URL foi gerada. Se ela expirar, gere outra no site e substitua abaixo.
-WEBHOOK_DEMONSTRACAO = "https://webhook.site/bb185afd-8555-45f3-9e21-2377dc8f58d1"
-#
-# Opção para enviar ao canal correto da equipe (Discord, Slack...) sem mexer no código:
-# defina WEBHOOK_EQUIPE_MEDICA no arquivo .env. Se existir, ele tem prioridade sobre o exemplo fixo.
-WEBHOOK_EQUIPE_MEDICA = os.getenv("WEBHOOK_EQUIPE_MEDICA") or WEBHOOK_DEMONSTRACAO
+# Webhook opcional para envio de alertas.
+# Por segurança, permanece desativado quando não configurado.
+WEBHOOK_EQUIPE_MEDICA = os.getenv(
+    "WEBHOOK_EQUIPE_MEDICA", ""
+).strip()
+
+
 
 def azure_speech_api_configurado():
     return bool(AZURE_SPEECH_KEY and AZURE_SPEECH_REGION and AZURE_SPEECH_ENDPOINT)

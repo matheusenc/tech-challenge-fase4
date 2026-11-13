@@ -106,3 +106,61 @@ def test_api_fast_transcription_limita_falantes_e_normaliza_resultado(tmp_path, 
         {"speaker_id": "Guest-2", "texto": "Olá.",
          "inicio_segundos": 2.3, "duracao_segundos": 0.5},
     ]
+
+def test_negacao_de_dor_no_peito():
+    from monitoramento.analise_audio import encontrar_termos_criticos
+
+    texto = (
+        "Estou sentindo muito cansaço. "
+        "Não, não estou com dor no peito agora. "
+        "Mas sinto falta de ar quando subo escadas."
+    )
+
+    termos = encontrar_termos_criticos(texto)
+    encontrados = {item["termo"] for item in termos}
+
+    assert "cansaço" in encontrados
+    assert "falta de ar" in encontrados
+    assert "dor no peito" not in encontrados
+
+
+
+def test_pausas_somente_do_paciente():
+    taxa = 16000
+    tempo = np.arange(taxa) / taxa
+    voz = 0.2 * np.sin(2 * np.pi * 220 * tempo)
+    silencio = np.zeros(taxa // 2)
+    # Fala do paciente de 0 a 2,5 s, médica de 2,5 a 3,5 s.
+    audio = np.concatenate((voz, silencio, voz, voz))
+    falas = [
+        {"speaker_id": "Guest-2", "inicio_segundos": 0, "duracao_segundos": 2.5},
+        {"speaker_id": "Guest-1", "inicio_segundos": 2.5, "duracao_segundos": 1},
+    ]
+    valores = extrair_caracteristicas_voz_falante(audio, taxa, falas, "Guest-2")
+    assert valores is not None
+    assert valores["pausas_por_minuto"] > 0
+    assert 0.10 < valores["proporcao_pausas"] < 0.35
+    assert valores["duracao_segundos"] < 3
+
+
+def test_sem_falas_do_paciente():
+    audio = np.zeros(16000)
+    falas = [{"speaker_id": "Guest-1", "inicio_segundos": 0, "duracao_segundos": 1}]
+    assert extrair_caracteristicas_voz_falante(audio, 16000, falas, "Guest-2") is None
+
+
+def test_trecho_silencioso_nao_atribuido_como_fala():
+    audio = np.zeros(16000)
+    falas = [{"speaker_id": "Guest-2", "inicio_segundos": 0, "duracao_segundos": 1}]
+    assert extrair_caracteristicas_voz_falante(audio, 16000, falas, "Guest-2") is None
+
+
+def test_alteracao_vocal_por_pausas():
+    # Testa a regra já existente sem alterar os limites.
+    from monitoramento import config
+    valores = {
+        "proporcao_pausas": config.LIMITE_PROPORCAO_PAUSAS + 0.01,
+        "pausas_por_minuto": 0,
+        "palavras_por_minuto": config.LIMITE_PALAVRAS_POR_MINUTO + 20,
+    }
+    assert any("pausas" in a.lower() for a in avaliar_alteracoes_vocais(valores))

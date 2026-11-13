@@ -32,3 +32,38 @@ def test_fusao_prioriza_paciente_com_mais_fontes():
     assert [r["paciente_id"] for r in resumo] == ["P001", "P002"]
     assert resumo[0]["fontes"] == ["audio", "sinais_vitais"]
     assert resumo[0]["pontuacao"] == 5 and resumo[1]["pontuacao"] == 6
+
+def test_correlacao_multimodal():
+    from datetime import datetime, timedelta
+
+    from monitoramento.alertas import (
+        Alerta,
+        correlacionar_alertas,
+    )
+
+    inicio = datetime(2026, 11, 8, 10, 0)
+
+    alertas = [
+        Alerta(
+            inicio, "P001", "sinais_vitais",
+            "Saturação anormal", "alta", "Teste"
+        ),
+        Alerta(
+            inicio + timedelta(minutes=2),
+            "P001", "audio",
+            "Falta de ar", "alta", "Teste"
+        ),
+        Alerta(
+            inicio + timedelta(minutes=20),
+            "P001", "video",
+            "Postura inadequada", "media", "Teste"
+        ),
+    ]
+
+    episodios = correlacionar_alertas(alertas)
+
+    assert len(episodios) == 1
+    assert episodios[0]["paciente_id"] == "P001"
+    assert episodios[0]["fontes"] == ["audio", "sinais_vitais"]
+    assert episodios[0]["gravidade"] == "alta"
+    assert len(episodios[0]["alertas"]) == 2

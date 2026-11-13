@@ -5,9 +5,9 @@ para identificar sinais precoces de risco e **alertar a equipe médica**.
 
 | Tipo de dado | O que o sistema faz | Tecnologia |
 |---|---|---|
-| Vídeo de fisioterapia | Detecta postura inadequada e possível queda | YOLOv8-Pose (análise postural, padrão OpenPose) |
+| Vídeo de fisioterapia | Detecta postura inadequada e possível queda | YOLOv8-Pose (análise postural por pontos corporais) |
 | Vídeo de cirurgia | Detecta objeto de risco dentro da área crítica | YOLOv8 (detecção de objetos) |
-| Áudio (consultas) | Transcreve, mede pausas e ritmo da fala, procura termos críticos e analisa sentimento | Azure Speech to Text, librosa, Azure Text Analytics |
+| Áudio (consultas) | Transcreve, separa falantes, mede pausas e ritmo da fala, procura termos críticos e analisa sentimento | Azure Speech to Text, librosa, Azure Text Analytics |
 | Sinais vitais | Limites clínicos, variação brusca (z-score) e combinações incomuns | Regras + Isolation Forest |
 | Prescrições | Dose acima do máximo, aumento brusco, dose duplicada, remédio de alta vigilância | Regras |
 | Movimentação | Inatividade prolongada, agitação noturna, queda de mobilidade | Regras |
@@ -40,9 +40,8 @@ tech-challenge-fase4/
 │   └── relatorio.py              # gera o relatório em Markdown
 ├── dados/                        # arquivos de entrada (CSV, vídeo, áudio)
 ├── saida/                        # gerada ao rodar: alertas.json, relatório, vídeo anotado
-├── testes/                       # testes automáticos (pytest), inclusive das regras de vídeo
+├── testes/                       # testes automáticos (pytest), inclusive das regras de vídeo e áudio
 ├── docs/manual.html              # manual com diagrama interativo do fluxo
-├── docs/roteiro_video.md         # sugestão de roteiro para o vídeo de entrega
 └── RELATORIO_TECNICO.md          # relatório técnico exigido na entrega
 ```
 
@@ -50,48 +49,54 @@ tech-challenge-fase4/
 
 ## 1. Instalação
 
-Requisitos: **Python 3.10 ou mais novo** (testado no 3.13 e no 3.14).
+Requisitos: **Python 3.10 ou mais novo** (execução e testes validados com Python 3.12.10).
 
 ```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
+# Windows (PowerShell)
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
 # Linux / macOS
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
 
 > A instalação do `ultralytics` traz o PyTorch e pode demorar alguns minutos.
-> Os pesos dos modelos (`yolov8n.pt` e `yolov8n-pose.pt`, ~6 MB cada) são baixados
+> Os pesos dos modelos (`yolov8n.pt` e `yolov8n-pose.pt`) são baixados
 > automaticamente na primeira execução.
 
 ## 2. Configurar o Azure
 
-1. No [portal do Azure](https://portal.azure.com), crie dois recursos (o plano gratuito **F0** basta):
+1. No [portal do Azure](https://portal.azure.com), crie os recursos necessários:
    - **Speech** (Azure AI Speech)
    - **Language** (Azure AI Language, antigo Text Analytics)
-2. Em cada recurso, abra **Chaves e Ponto de Extremidade** e copie chave, região e endpoint.
+2. Em cada recurso, abra **Chaves e Ponto de Extremidade** e copie os valores correspondentes. Verifique a disponibilidade e as limitações do plano escolhido, especialmente para diarização.
 3. Copie o arquivo `.env.exemplo` para `.env` e preencha:
 
-```
+```dotenv
 AZURE_SPEECH_KEY=sua-chave
 AZURE_SPEECH_REGION=brazilsouth
-AZURE_SPEECH_ENDPOINT=https://brazilsouth.api.cognitive.microsoft.com/
+# Opcional: preencha com o endpoint real se utilizar a Fast Transcription API.
+AZURE_SPEECH_ENDPOINT=
 AZURE_LANGUAGE_KEY=sua-chave
 AZURE_LANGUAGE_ENDPOINT=https://seu-recurso.cognitiveservices.azure.com/
+WEBHOOK_EQUIPE_MEDICA=
 ```
 
-**Sem o Azure configurado o projeto continua funcionando:** a transcrição é lida de um arquivo
-`.txt` com o mesmo nome do áudio (ex.: `consulta.wav` → `consulta.txt`) e o sentimento não é analisado.
+No PowerShell, a cópia pode ser feita com `Copy-Item .env.exemplo .env`.
+A região `brazilsouth` é apenas um exemplo; utilize a região e o endpoint do seu recurso.
+**Não publique o arquivo `.env` nem suas chaves no GitHub.**
 
-**Webhook (alerta à equipe):** o exemplo fixo usa o https://webhook.site. Abra o site, copie a
-"Your unique URL" e cole em `WEBHOOK_DEMONSTRACAO`, em `monitoramento/config.py`, no lugar de
-`COLE-AQUI-O-SEU-CODIGO`. Os alertas aparecem na página em tempo real. Para enviar ao canal correto
-da equipe (Discord, Slack...) sem mexer no código, defina `WEBHOOK_EQUIPE_MEDICA` no `.env`: ele tem
-prioridade sobre o exemplo fixo. Para não enviar nada, rode com `--sem-webhook`.
+**Sem o Azure configurado o projeto continua funcionando parcialmente:** se existir um
+`.txt` com o mesmo nome do áudio (ex.: `consulta.wav` → `consulta.txt`), ele pode ser
+utilizado como transcrição alternativa. Sem diarização, o sistema não atribui automaticamente
+termos críticos ou sentimento a um paciente específico.
+
+**Webhook (alerta à equipe):** por padrão, não há destino fixo configurado. Para enviar alertas,
+defina `WEBHOOK_EQUIPE_MEDICA` no `.env` com uma URL autorizada. Para executar sem envio externo,
+use `--sem-webhook`.
 
 ## 3. Executar
 
@@ -99,19 +104,32 @@ prioridade sobre o exemplo fixo. Para não enviar nada, rode com `--sem-webhook`
 # 1) Gerar dados de exemplo (sinais vitais, prescrições, movimentação)
 python gerar_dados_exemplo.py
 
-# 2) Rodar o sistema completo
+# 2) Rodar o sistema completo (arquivos padrão da pasta dados/)
 python main.py
 
+# Execução integrada validada: vídeo, áudio e dados clínicos
+python main.py --audio dados/consulta.wav --paciente P001 --falante-paciente Guest-2 --sem-webhook
+
 # Com vídeo e áudio próprios:
-python main.py --video dados/fisioterapia.mp4 --tipo-video fisioterapia --audio dados/consulta.wav --paciente P001
-python main.py --video dados/cirurgia.mp4 --tipo-video cirurgia
+python main.py --video dados/video_fisioterapia.mp4 --tipo-video fisioterapia --audio dados/consulta.wav --paciente P001 --falante-paciente Guest-2 --sem-webhook
+python main.py --video dados/cirurgia.mp4 --tipo-video cirurgia --sem-webhook
 
 # 3) Simulação de monitoramento em tempo real (sinais vitais chegando um a um)
 python simular_tempo_real.py --intervalo 0.02
 
 # 4) Testes automáticos
-python -m pytest testes/
+python -m pytest testes/ -q
 ```
+
+O identificador `P001` é o paciente nos dados clínicos; `Guest-2` é o identificador
+atribuído à voz do paciente na diarização do áudio de demonstração. Em outras gravações,
+confirme qual `Guest-N` corresponde ao paciente antes de executar.
+
+**Resultados da execução integrada de 11/11/2026:** 129 quadros de vídeo analisados
+(1 evento postural), 2 termos críticos no áudio, 11 alertas de sinais vitais,
+5 de prescrições e 3 de movimentação; **22 alertas** no total. Os **31 testes**
+automatizados passaram. Consulte [`RELATORIO_TECNICO.md`](RELATORIO_TECNICO.md)
+para os detalhes e limitações.
 
 Resultados na pasta `saida/`:
 
@@ -124,10 +142,10 @@ Resultados na pasta `saida/`:
 | Dado | Sugestão |
 |---|---|
 | Sinais vitais reais | [PhysioNet BIDMC](https://physionet.org/content/bidmc/1.0.0/) (acesso aberto). Baixe a pasta `bidmc_csv` e rode `python converter_physionet.py caminho/bidmc_csv`, depois `python main.py --sinais dados/sinais_vitais_physionet.csv` |
-| Vídeo de fisioterapia | Grave um integrante fazendo exercícios e simulando uma queda em um colchão, ou use vídeos livres do [Pexels](https://www.pexels.com/search/videos/physiotherapy/) |
+| Vídeo de fisioterapia | Grave um integrante fazendo exercícios ou use vídeos livres do [Pexels](https://www.pexels.com/search/videos/physiotherapy/) |
 | Vídeo de "cirurgia" | Grave uma mesa simulando o campo cirúrgico e coloque um celular ou tesoura no centro (área crítica) |
-| Áudio de consulta | Grave no celular um integrante lendo `dados/consulta.txt` devagar e com pausas (simula cansaço). Converta para `.wav` se precisar |
-| Sons respiratórios | [Google AudioSet](https://research.google.com/audioset/): classes *Cough*, *Breathing*, *Wheeze*, *Gasp* para testar as métricas de pausas |
+| Áudio de consulta | Use o arquivo de demonstração `dados/consulta.wav` ou grave um diálogo simulado entre duas pessoas, convertendo para `.wav` se necessário |
+| Sons respiratórios | [Google AudioSet](https://research.google.com/audioset/): classes *Cough*, *Breathing*, *Wheeze*, *Gasp* para estudos adicionais |
 
 ## 5. Ajustando o sistema
 
@@ -137,17 +155,20 @@ Todos os limites ficam em `monitoramento/config.py`, com comentários. Exemplos:
 - `LIMITE_INCLINACAO_TRONCO_GRAUS`, `LIMITE_DESCIDA_QUEDA`: sensibilidade da análise postural
 - `AREA_CRITICA`, `OBJETOS_DE_RISCO`: região do campo cirúrgico e objetos proibidos nela
 - `TERMOS_CRITICOS`: palavras procuradas na transcrição
+- `LIMITE_PROPORCAO_PAUSAS`, `LIMITE_PAUSAS_POR_MINUTO`, `LIMITE_PALAVRAS_POR_MINUTO`: indicadores vocais
 - `DOSE_MAXIMA`, `INTERVALO_MINIMO_HORAS`: regras de prescrição
 
 ## Sobre OpenPose x YOLOv8-Pose
 
 O enunciado cita o OpenPose como exemplo de modelo de análise postural. Usamos o **YOLOv8-Pose**,
-que estima os **mesmos 17 pontos do corpo (padrão COCO)**, instala só com `pip` (o OpenPose
-exige compilação em C++/CUDA) e já vem da mesma biblioteca do YOLOv8 usado para os objetos.
-Nas aulas o mesmo conceito (keypoints/landmarks + regras sobre as coordenadas) foi mostrado com o
-MediaPipe; trocamos pelo YOLOv8-Pose para usar uma única biblioteca para pose e objetos.
+que estima **17 pontos do corpo (padrão COCO)**, instala com `pip` (o OpenPose
+exige uma configuração mais complexa) e vem da mesma biblioteca do YOLOv8 usado para os objetos.
+Nas aulas o conceito de keypoints/landmarks + regras sobre as coordenadas foi mostrado com o
+MediaPipe; utilizamos o YOLOv8-Pose para usar uma única biblioteca para pose e objetos.
 
 ## Aviso
 
 Projeto acadêmico. Os limites são ilustrativos e as análises de voz são **heurísticas de triagem,
 não diagnóstico**. Em uso real, os critérios precisam ser validados pela equipe médica.
+A inclinação detectada no vídeo representa um desvio de um limite configurado, não comprova
+que o movimento de fisioterapia foi executado incorretamente.

@@ -67,18 +67,30 @@ def dentro_da_area_critica(x, y, largura, altura):
 # Fisioterapia: regras de postura (YOLOv8-Pose)
 # ---------------------------------------------------------------------------
 def pessoa_principal(resultado):
-    """Escolhe a maior pessoa detectada (normalmente o paciente).
-    Devolve (pontos, confiancas, altura_do_corpo) ou None."""
+    """
+    Seleciona a pessoa para análise postural.
+
+    Por segurança, quando múltiplas pessoas são detectadas,
+    não atribui automaticamente os movimentos ao paciente.
+    """
     if resultado.keypoints is None or len(resultado.boxes) == 0:
         return None
 
     caixas = resultado.boxes.xyxy.cpu().numpy()
-    areas = (caixas[:, 2] - caixas[:, 0]) * (caixas[:, 3] - caixas[:, 1])
-    indice = int(areas.argmax())
+
+    if len(caixas) != 1:
+        return None
+
+    indice = 0
 
     pontos = resultado.keypoints.xy[indice].cpu().numpy()
     confiancas = resultado.keypoints.conf[indice].cpu().numpy()
-    altura_corpo = max(caixas[indice, 3] - caixas[indice, 1], 1.0)
+
+    altura_corpo = max(
+        caixas[indice, 3] - caixas[indice, 1],
+        1.0
+    )
+
     return pontos, confiancas, altura_corpo
 
 

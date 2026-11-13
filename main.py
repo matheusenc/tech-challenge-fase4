@@ -39,7 +39,8 @@ def ler_argumentos():
     parser.add_argument("--tipo-video", default="fisioterapia", choices=["fisioterapia", "cirurgia"])
     parser.add_argument("--audio", default=dados / "teste.wav", type=Path)
     parser.add_argument("--paciente", default="P001", help="Paciente do vídeo/áudio")
-    parser.add_argument("--qdeFalantes", default=2, help="Quantidade de falantes no áudio")
+    parser.add_argument("--qdeFalantes",type=int,default=2,help="Quantidade de falantes no áudio")
+    parser.add_argument("--falante-paciente",help="Identificador do paciente na transcrição (ex.: Guest-2)")
     parser.add_argument("--sinais", default=dados / "sinais_vitais.csv", type=Path)
     parser.add_argument("--prescricoes", default=dados / "prescricoes.csv", type=Path)
     parser.add_argument("--movimentacao", default=dados / "movimentacao.csv", type=Path)
@@ -81,7 +82,7 @@ def main():
 
     # 2. Áudio
     retorno = executar_etapa("Análise de áudio", args.audio,
-                             lambda: analisar_audio(args.audio, args.paciente, args.qdeFalantes))
+                             lambda: analisar_audio(args.audio, args.paciente, args.qdeFalantes, args.falante_paciente))
     if retorno:
         resultado, alertas = retorno
         resultados_audio.append(resultado)

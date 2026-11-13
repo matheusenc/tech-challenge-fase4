@@ -7,7 +7,7 @@ O Markdown pode ser aberto no VS Code, no GitHub ou convertido para PDF.
 from collections import Counter
 from datetime import datetime
 
-from monitoramento.alertas import formatar_alerta, resumo_por_paciente
+from monitoramento.alertas import correlacionar_alertas, formatar_alerta, resumo_por_paciente
 from monitoramento.analise_video import formatar_tempo
 
 NOMES_GRAVIDADE = {"alta": "alta", "media": "média", "baixa": "baixa"}
@@ -115,12 +115,58 @@ def secao_alertas(alertas, limite=100):
     return linhas + [""]
 
 
+def secao_episodios_multimodais(alertas):
+    """Gera uma seção com eventos relacionados temporalmente."""
+    linhas = ["## Episódios multimodais correlacionados", ""]
+
+    episodios = correlacionar_alertas(alertas, janela_minutos=5)
+
+    if not episodios:
+        return linhas + [
+            "Nenhum episódio com alertas de múltiplas fontes "
+            "identificado na janela de 5 minutos.",
+            "",
+        ]
+
+    linhas.extend([
+        "Alertas de diferentes fontes registrados para o mesmo "
+        "paciente em uma janela temporal de até 5 minutos.",
+        "",
+        "| Paciente | Início | Fim | Fontes | Gravidade |",
+        "|---|---|---|---|---|",
+    ])
+
+    for episodio in episodios:
+        inicio = episodio["inicio"].strftime("%d/%m/%Y %H:%M:%S")
+        fim = episodio["fim"].strftime("%d/%m/%Y %H:%M:%S")
+
+        fontes = ", ".join(
+            NOMES_ORIGEM.get(fonte, fonte)
+            for fonte in episodio["fontes"]
+        )
+
+        gravidade = NOMES_GRAVIDADE.get(
+            episodio["gravidade"],
+            episodio["gravidade"],
+        )
+
+        linhas.append(
+            f"| {episodio['paciente_id']} "
+            f"| {inicio} "
+            f"| {fim} "
+            f"| {fontes} "
+            f"| {gravidade} |"
+        )
+
+    return linhas + [""]
+
 def gerar_relatorio(caminho_arquivo, alertas, resultados_video=(), resultados_audio=()):
     linhas = ["# Relatório de Monitoramento Multimodal de Pacientes", "",
               f"Gerado em {datetime.now():%d/%m/%Y %H:%M}", ""]
     linhas += secao_resumo(alertas)
     if alertas:
         linhas += secao_pacientes(alertas)
+        linhas += secao_episodios_multimodais(alertas)
     for resultado in resultados_video:
         linhas += secao_video(resultado)
     for resultado in resultados_audio:

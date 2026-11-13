@@ -85,6 +85,60 @@ def resumo_por_paciente(alertas):
         resumo["fontes"] = sorted(resumo["fontes"])
     return sorted(pacientes.values(), key=lambda r: (-len(r["fontes"]), -r["pontuacao"]))
 
+def correlacionar_alertas(alertas, janela_minutos=5):
+    """
+    Identifica eventos de diferentes fontes para o mesmo paciente
+    dentro de uma janela temporal.
+
+    Retorna apenas grupos com pelo menos duas origens distintas.
+    """
+    from collections import defaultdict
+    from datetime import timedelta
+
+    por_paciente = defaultdict(list)
+
+    for alerta in alertas:
+        por_paciente[alerta.paciente_id].append(alerta)
+
+    episodios = []
+    janela = timedelta(minutes=janela_minutos)
+
+    for paciente_id, lista in por_paciente.items():
+        lista.sort(key=lambda a: a.data_hora)
+
+        grupo = []
+
+        def registrar_grupo():
+            if len({a.origem for a in grupo}) < 2:
+                return
+
+            episodios.append({
+                "paciente_id": paciente_id,
+                "inicio": grupo[0].data_hora,
+                "fim": grupo[-1].data_hora,
+                "fontes": sorted({a.origem for a in grupo}),
+                "gravidade": min(
+                    (a.gravidade for a in grupo),
+                    key=lambda g: ORDEM_GRAVIDADE.get(g, 99)
+                ),
+                "alertas": list(grupo),
+            })
+
+        for alerta in lista:
+            if not grupo:
+                grupo = [alerta]
+                continue
+
+            if alerta.data_hora - grupo[0].data_hora <= janela:
+                grupo.append(alerta)
+            else:
+                registrar_grupo()
+                grupo = [alerta]
+
+        if grupo:
+            registrar_grupo()
+
+    return sorted(episodios, key=lambda e: e["inicio"])
 
 def salvar_alertas(alertas, caminho_arquivo):
     caminho_arquivo.parent.mkdir(parents=True, exist_ok=True)
